@@ -37,7 +37,7 @@ const checkAccess = async (userId, fileItemId) => {
     return { access: true, fileItem, level: 'owner' };
   }
 
-  // Check if shared with user
+  // Check if shared directly with user
   const share = await FileShare.findOne({
     where: {
       fileItemId,
@@ -47,6 +47,31 @@ const checkAccess = async (userId, fileItemId) => {
 
   if (share) {
     return { access: true, fileItem, level: share.permission };
+  }
+
+  // Check if user has access through parent folder chain
+  let parentId = fileItem.parentId;
+  while (parentId) {
+    const parentItem = await FileItem.findByPk(parentId);
+    if (!parentItem) break;
+
+    // If user owns the parent folder, they can access this item
+    if (parentItem.ownerId === userId) {
+      return { access: true, fileItem, level: 'inherited' };
+    }
+
+    // If parent is shared with user, they can access this item
+    const parentShare = await FileShare.findOne({
+      where: {
+        fileItemId: parentId,
+        userId
+      }
+    });
+    if (parentShare) {
+      return { access: true, fileItem, level: parentShare.permission };
+    }
+
+    parentId = parentItem.parentId;
   }
 
   // Check if it's a public item
@@ -216,8 +241,54 @@ export const listFiles = async (req, res, next) => {
     const { parentId } = req.query;
     const parentIdNum = parentId ? parseInt(parentId) : null;
 
-    // Get all items owned by user or shared with user
-    const userFiles = await FileItem.findAll({
+    // First, check if user has access to the parent folder (if specified)
+    // Use checkAccess which properly handles: owner, shared, and public
+    if (parentIdNum) {
+      const parentAccess = await checkAccess(req.user.id, parentIdNum);
+      if (!parentAccess.access) {
+        return res.status(404).json({
+          success: false,
+          message: 'Folder not found'
+        });
+      }
+
+      // User is viewing a shared folder - show ALL contents inside it
+      // (owned by the folder owner)
+      const folderOwnerId = parentAccess.fileItem.ownerId;
+
+      const allItemsInSharedFolder = await FileItem.findAll({
+        where: {
+          parentId: parentIdNum,
+          ownerId: folderOwnerId
+        },
+        include: [
+          {
+            model: User,
+            as: 'owner',
+            attributes: ['id', 'name', 'email']
+          }
+        ],
+        order: [
+          ['type', 'DESC'],
+          ['name', 'ASC']
+        ]
+      });
+
+      const itemsWithShareInfo = allItemsInSharedFolder.map(item => ({
+        ...item.toJSON(),
+        shared: true, // These are inside a shared folder
+        permission: parentAccess.level
+      }));
+
+      return res.json({
+        success: true,
+        data: { files: itemsWithShareInfo }
+      });
+    }
+
+    // Root level - show owned items + directly shared items
+    // Get items owned by the user
+    const ownedItems = await FileItem.findAll({
       where: {
         ownerId: req.user.id,
         parentId: parentIdNum
@@ -235,7 +306,7 @@ export const listFiles = async (req, res, next) => {
       ]
     });
 
-    // Get shared files
+    // Get items shared with the user (excluding public items - they only show via public link)
     const sharedItems = await FileShare.findAll({
       where: { userId: req.user.id },
       include: [{
@@ -250,17 +321,25 @@ export const listFiles = async (req, res, next) => {
       }]
     });
 
-    // Combine and deduplicate
+    // Map shared items
     const sharedFiles = sharedItems.map(share => ({
       ...share.fileItem.toJSON(),
       shared: true,
       permission: share.permission
     }));
 
-    const ownerFileIds = new Set(userFiles.map(f => f.id));
-    const uniqueSharedFiles = sharedFiles.filter(f => !ownerFileIds.has(f.id));
+    // Combine owned and shared items
+    const ownedFileIds = new Set(ownedItems.map(f => f.id));
+    const uniqueSharedFiles = sharedFiles.filter(f => !ownedFileIds.has(f.id));
 
-    const allItems = [...userFiles.map(f => f.toJSON()), ...uniqueSharedFiles];
+    // Add shared flag to owned items
+    const ownedWithShareInfo = ownedItems.map(item => ({
+      ...item.toJSON(),
+      shared: false,
+      permission: null
+    }));
+
+    const allItems = [...ownedWithShareInfo, ...uniqueSharedFiles];
 
     res.json({
       success: true,
@@ -277,12 +356,13 @@ export const getFile = async (req, res, next) => {
     const { id } = req.params;
     const fileId = parseInt(id);
 
-    const { access, fileItem, reason } = await checkAccess(req.user.id, fileId);
+    const { access, fileItem } = await checkAccess(req.user.id, fileId);
 
     if (!access) {
-      return res.status(403).json({
+      // Don't reveal whether file exists - just say not found for security
+      return res.status(404).json({
         success: false,
-        message: reason === 'not_found' ? 'File not found' : 'No permission to access this file'
+        message: 'File not found'
       });
     }
 

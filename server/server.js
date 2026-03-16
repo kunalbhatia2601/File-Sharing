@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url';
 import sequelize from './config/database.js';
 import authRoutes from './routes/authRoutes.js';
 import fileRoutes from './routes/fileRoutes.js';
+import userRoutes from './routes/userRoutes.js';
 import { reqLogger } from './middleware/reqLoggerMiddleware.js';
 
 dotenv.config();
@@ -28,6 +29,7 @@ app.use(reqLogger);
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/files', fileRoutes);
+app.use('/api/users', userRoutes);
 
 app.get('/', (req, res) => {
     res.send('File Sharing Platform API');
