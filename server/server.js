@@ -1,11 +1,17 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import sequelize from './config/database.js';
 import authRoutes from './routes/authRoutes.js';
+import fileRoutes from './routes/fileRoutes.js';
 import { reqLogger } from './middleware/reqLoggerMiddleware.js';
 
 dotenv.config();
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 2100;
@@ -13,11 +19,15 @@ const PORT = process.env.PORT || 2100;
 app.use(cors());
 app.use(express.json());
 
+// Serve uploaded files
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
 // Request logging middleware
 app.use(reqLogger);
 
 // Routes
 app.use('/api/auth', authRoutes);
+app.use('/api/files', fileRoutes);
 
 app.get('/', (req, res) => {
     res.send('File Sharing Platform API');
